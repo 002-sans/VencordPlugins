@@ -4,7 +4,7 @@ import { findStoreLazy } from "@webpack";
 import { Menu, Toasts } from "@webpack/common";
 import * as DataStore from "@api/DataStore";
 const UserProfileStore = findStoreLazy("UserProfileStore");
-const customBadgesMap = new Map<string, any[]>();
+const userBadgesMap = new Map<string, any[]>();
 
 const removedBadgesMap = new Map<string, Set<string>>();
 
@@ -282,9 +282,9 @@ const availableBadges = [
 ];
 
 async function loadData() {
-    const savedCustomBadges = await DataStore.get("customBadges");
-    if (savedCustomBadges) {
-        Object.entries(savedCustomBadges).forEach(([userId, badges]) => {
+    const savedUserBadges = await DataStore.get("userBadges");
+    if (savedUserBadges) {
+        Object.entries(savedUserBadges).forEach(([userId, badges]) => {
             const updatedBadges = (badges as any[]).map(badge => {
                 const freshBadge = availableBadges.find(b => b.id === badge.id);
                 if (freshBadge && (badge.id.startsWith("premium_tenure_") || badge.id.startsWith("guild_booster_"))) {
@@ -292,7 +292,7 @@ async function loadData() {
                 }
                 return badge;
             });
-            customBadgesMap.set(userId, updatedBadges);
+            userBadgesMap.set(userId, updatedBadges);
         });
     }
 
@@ -305,8 +305,8 @@ async function loadData() {
 }
 
 async function saveData() {
-    const customBadgesObject = Object.fromEntries(customBadgesMap);
-    await DataStore.set("customBadges", customBadgesObject);
+    const userBadgesObject = Object.fromEntries(userBadgesMap);
+    await DataStore.set("userBadges", userBadgesObject);
 
     const removedBadgesObject = Object.fromEntries(
         Array.from(removedBadgesMap.entries()).map(([userId, badgeIds]) => [userId, Array.from(badgeIds)])
@@ -315,30 +315,30 @@ async function saveData() {
 }
 
 function addBadgesToUser(userId: string, badges: any[]) {
-    const existingBadges = customBadgesMap.get(userId) || [];
+    const existingBadges = userBadgesMap.get(userId) || [];
     badges.forEach(badge => {
         const existingIndex = existingBadges.findIndex(b => b.id === badge.id);
         if (existingIndex === -1) {
             existingBadges.push(badge);
         }
     });
-    customBadgesMap.set(userId, existingBadges);
+    userBadgesMap.set(userId, existingBadges);
     saveData();
 }
 
 function removeBadgeFromUser(userId: string, badgeId: string) {
-    const existingBadges = customBadgesMap.get(userId) || [];
+    const existingBadges = userBadgesMap.get(userId) || [];
     const updatedBadges = existingBadges.filter(b => b.id !== badgeId);
     if (updatedBadges.length > 0) {
-        customBadgesMap.set(userId, updatedBadges);
+        userBadgesMap.set(userId, updatedBadges);
     } else {
-        customBadgesMap.delete(userId);
+        userBadgesMap.delete(userId);
     }
     saveData();
 }
 
 function getUserBadges(userId: string): any[] {
-    return customBadgesMap.get(userId) || [];
+    return userBadgesMap.get(userId) || [];
 }
 
 function hideRealBadge(userId: string, badgeId: string) {
@@ -364,7 +364,7 @@ function isRealBadgeHidden(userId: string, badgeId: string): boolean {
 }
 
 function toggleBadge(userId: string, badge: any, hasActualBadge: boolean) {
-    const hasCustomBadge = getUserBadges(userId).find(b => b.id === badge.id);
+    const hasUserBadge = getUserBadges(userId).find(b => b.id === badge.id);
     const isHidden = isRealBadgeHidden(userId, badge.id);
 
     if (hasActualBadge) {
@@ -384,7 +384,7 @@ function toggleBadge(userId: string, badge: any, hasActualBadge: boolean) {
             });
         }
     } else {
-        if (hasCustomBadge) {
+        if (hasUserBadge) {
             removeBadgeFromUser(userId, badge.id);
             Toasts.show({
                 message: `Removed ${badge.title}`,
@@ -411,7 +411,7 @@ function giveAllBadges(userId: string) {
     });
 }
 
-function addCustomBadge(userId: string) {
+function addUserBadge(userId: string) {
     const badgeId = prompt("Enter badge ID:");
     if (!badgeId) return;
 
@@ -423,16 +423,16 @@ function addCustomBadge(userId: string) {
 
     const link = prompt("Enter badge link (optional):", "https://discord.com");
 
-    const customBadge = {
+    const userBadge = {
         id: badgeId,
         description: description,
         icon: icon,
         link: link || "https://discord.com"
     };
 
-    addBadgesToUser(userId, [customBadge]);
+    addBadgesToUser(userId, [userBadge]);
     Toasts.show({
-        message: `Added custom badge: ${badgeId}`,
+        message: `Added badge: ${badgeId}`,
         type: Toasts.Type.SUCCESS,
         id: Toasts.genId()
     });
@@ -441,7 +441,7 @@ function addCustomBadge(userId: string) {
 let originalGetUserProfile: any;
 
 export default definePlugin({
-    name: "CustomBadges",
+    name: "BadgeSelector",
     description: "Customize user badges - add, remove, or hide any Discord badge",
     authors: [
         { id: 1263457746829705310n, name: '.q1' },
@@ -464,9 +464,9 @@ export default definePlugin({
                 newBadges = newBadges.filter(b => !hiddenBadges.has(b.id));
             }
 
-            if (customBadgesMap.has(userId)) {
-                const customBadges = customBadgesMap.get(userId)!;
-                customBadges.forEach(badgeObj => {
+            if (userBadgesMap.has(userId)) {
+                const userBadges = userBadgesMap.get(userId)!;
+                userBadges.forEach(badgeObj => {
                     const { id, description, icon, link } = badgeObj;
                     const badgeIndex = newBadges.findIndex(b => b.id === id);
                     if (badgeIndex === -1) {
@@ -496,7 +496,7 @@ export default definePlugin({
         if (originalGetUserProfile) {
             UserProfileStore.getUserProfile = originalGetUserProfile;
         }
-        customBadgesMap.clear();
+        userBadgesMap.clear();
         removedBadgesMap.clear();
     },
 
@@ -504,28 +504,28 @@ export default definePlugin({
         "user-context"(children, { user }) {
             if (!user) return;
 
-            const currentCustomBadges = getUserBadges(user.id);
+            const currentUserBadges = getUserBadges(user.id);
             const userProfile = originalGetUserProfile ? originalGetUserProfile.call(UserProfileStore, user.id) : UserProfileStore.getUserProfile(user.id);
             const actualBadges = userProfile?.badges || [];
 
             children.push(
                 <Menu.MenuItem
-                    label="Add Custom"
+                    label="Add Badge"
                     key="add-custom-badge"
                     id="user-context-add-custom"
                     color="brand"
-                    action={() => addCustomBadge(user.id)}
+                    action={() => addUserBadge(user.id)}
                 />,
                 <Menu.MenuItem
-                    label="Custom Badges"
+                    label="Manage Badges"
                     key="custom-badges"
                     id="user-context-custom-badges"
                 >
                     {availableBadges.map(badge => {
-                        const hasCustomBadge = currentCustomBadges.find(b => b.id === badge.id);
+                        const hasUserBadge = currentUserBadges.find(b => b.id === badge.id);
                         const hasActualBadge = actualBadges.find(b => b.id === badge.id);
                         const isHidden = isRealBadgeHidden(user.id, badge.id);
-                        const isChecked = !!hasCustomBadge || (!!hasActualBadge && !isHidden);
+                        const isChecked = !!hasUserBadge || (!!hasActualBadge && !isHidden);
 
                         return (
                             <Menu.MenuCheckboxItem
@@ -566,10 +566,10 @@ export default definePlugin({
                             actualBadges.forEach(badge => {
                                 hideRealBadge(user.id, badge.id);
                             });
-                            customBadgesMap.delete(user.id);
+                            userBadgesMap.delete(user.id);
 
                             Toasts.show({
-                                message: "Removed all badges (real + custom)",
+                                message: "Removed all badges",
                                 type: Toasts.Type.SUCCESS,
                                 id: Toasts.genId()
                             });
@@ -580,7 +580,7 @@ export default definePlugin({
                         id="reset-badges"
                         color="default"
                         action={() => {
-                            customBadgesMap.delete(user.id);
+                            userBadgesMap.delete(user.id);
                             removedBadgesMap.delete(user.id);
 
                             Toasts.show({

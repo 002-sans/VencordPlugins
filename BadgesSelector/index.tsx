@@ -1,294 +1,597 @@
-/*
- * Vencord, a Discord client mod
- * Copyright (c) 2024 Vendicated and contributors
- * SPDX-License-Identifier: GPL-3.0-or-later
- */
-
-import { NavContextMenuPatchCallback } from "@api/ContextMenu";
-import { definePluginSettings } from "@api/Settings";
-import definePlugin, { OptionType } from "@utils/types";
+import { Devs } from "@utils/constants";
+import definePlugin from "@utils/types";
 import { findStoreLazy } from "@webpack";
-import { Menu, React, UserStore } from "@webpack/common";
-let selectedBadges: Set<string> = new Set();
+import { Menu, Toasts } from "@webpack/common";
+import * as DataStore from "@api/DataStore";
+const UserProfileStore = findStoreLazy("UserProfileStore");
+const customBadgesMap = new Map<string, any[]>();
 
-function setupBadgeImageFixer() {
-    const BADGE_IMG_SELECTOR = 'img[src*="/badge-icons/"]';
+const removedBadgesMap = new Map<string, Set<string>>();
 
-    function tryFix(img: HTMLImageElement) {
-        try {
-            const src = img.getAttribute("src") || "";
-            if (src.includes("/badge-icons/https://") || src.includes("/badge-icons/http://") || src.includes("/badge-icons/data:")) {
-                const m = src.match(/\/badge-icons\/(.+?)(?:\.(?:png|webp|jpg|jpeg|gif))(?:\?|$)/i) || src.match(/\/badge-icons\/(.+)$/i);
-                if (!m) return;
-                let raw = m[1];
-                try { raw = decodeURIComponent(raw); } catch { }
-                raw = raw.replace(/%2F/gi, "/");
-                if (/^(https?:|data:)/.test(raw)) {
-                    img.referrerPolicy = "no-referrer";
-                    img.loading = "eager";
-                    img.decoding = "async";
-                    img.src = raw;
-                }
-            }
-        } catch { }
-    }
-
-    document.querySelectorAll(BADGE_IMG_SELECTOR).forEach(img => tryFix(img as HTMLImageElement));
-    const mo = new MutationObserver(muts => {
-        for (const mut of muts) {
-            mut.addedNodes.forEach(node => {
-                if (node.nodeType !== 1) return;
-                if ((node as Element).matches?.(BADGE_IMG_SELECTOR)) tryFix(node as HTMLImageElement);
-                (node as Element).querySelectorAll?.(BADGE_IMG_SELECTOR).forEach(img => tryFix(img as HTMLImageElement));
-            });
-        }
-    });
-    mo.observe(document.documentElement, { childList: true, subtree: true });
+function getNitroSinceDate(months: number): string {
+    const currentDate = new Date();
+    const sinceDate = new Date(currentDate);
+    sinceDate.setMonth(currentDate.getMonth() - months);
+    const month = sinceDate.getMonth() + 1;
+    const day = sinceDate.getDate();
+    const year = sinceDate.getFullYear();
+    return `${month}/${day}/${year.toString().slice(-2)}`;
 }
 
-const AVAILABLE_BADGES = [
-    { id: "staff", description: "Discord Staff", icon: "https://cdn.discordapp.com/badge-icons/5e74e9b61934fc1f67c65515d1f7e60d.png" },
-    { id: "nitro", description: "Subscriber since Jan 1, 2099", icon: "https://cdn.discordapp.com/badge-icons/2ba85e8026a8614b640c2837bcdfe21b.png" },
-    { id: "nitro_bronze", description: "Nitro Bronze", icon: "https://cdn.discordapp.com/badge-icons/4f33c4a9c64ce221936bd256c356f91f.png" },
-    { id: "old_nitro_bronze", description: "Nitro Bronze (old)", icon: "https://cdn.discordapp.com/badge-icons/19a1562a9ce21227116624daaf69e450.png" },
-    { id: "nitro_silver", description: "Nitro Silver", icon: "https://cdn.discordapp.com/badge-icons/4514fab914bdbfb4ad2fa23df76121a6.png" },
-    { id: "old_nitro_silver", description: "Nitro Silver (old)", icon: "https://cdn.discordapp.com/badge-icons/3d533bea11ec4f7bdbf23a4bdc7a373f.png" },
-    { id: "nitro_gold", description: "Nitro Gold", icon: "https://cdn.discordapp.com/badge-icons/2895086c18d5531d499862e41d1155a6.png" },
-    { id: "old_nitro_gold", description: "Nitro Gold (old)", icon: "https://cdn.discordapp.com/badge-icons/850a7f5909f9d54d6ad986c096937911.png" },
-    { id: "nitro_platinum", description: "Nitro Platinum", icon: "https://cdn.discordapp.com/badge-icons/0334688279c8359120922938dcb1d6f8.png" },
-    { id: "old_nitro_platinum", description: "Nitro Platinum (old)", icon: "https://cdn.discordapp.com/badge-icons/3393b2ca6e25e40d4bb3bd23d60d0cdd.png" },
-    { id: "nitro_diamond", description: "Nitro Diamond", icon: "https://cdn.discordapp.com/badge-icons/0d61871f72bb9a33a7ae568c1fb4f20a.png" },
-    { id: "old_nitro_diamond", description: "Nitro Diamond (old)", icon: "https://cdn.discordapp.com/badge-icons/7c85d3834db671b01e6d0fd1538663a0.png" },
-    { id: "nitro_emerald", description: "Nitro Emerald", icon: "https://cdn.discordapp.com/badge-icons/11e2d339068b55d3a506cff34d3780f3.png" },
-    { id: "old_nitro_emerald", description: "Nitro Emerald (old)", icon: "https://cdn.discordapp.com/badge-icons/2447661dbda1a992a616a583f8492ae3.png" },
-    { id: "nitro_ruby", description: "Nitro Ruby", icon: "https://cdn.discordapp.com/badge-icons/cd5e2cfd9d7f27a8cdcd3e8a8d5dc9f4.png" },
-    { id: "old_nitro_ruby", description: "Nitro Ruby (old)", icon: "https://cdn.discordapp.com/badge-icons/ddb868782712aa9f4ef98bef4d6e14f6.png" },
-    { id: "nitro_opal", description: "Nitro Opal", icon: "https://cdn.discordapp.com/badge-icons/5b154df19c53dce2af92c9b61e6be5e2.png" },
-    { id: "nitro_fire", description: "Nitro Fire", icon: "https://cdn.discordapp.com/badge-icons/cff7119d4417261c3f52fde8a94ba8e5.png" },
-    { id: "partner", description: "Partnered Server Owner", icon: "https://cdn.discordapp.com/badge-icons/3f9748e53446a137a052f3454e2de41e.png" },
-    { id: "old_partner", description: "Partnered Server Owner (old)", icon: "https://i.ibb.co/60v86C4D/Ywjiwvt.png" },
-    { id: "mod_alumni", description: "Moderator Programs Alumni", icon: "https://cdn.discordapp.com/badge-icons/fee1624003e2fee35cb398e125dc479b.png" },
-    { id: "old_mod_alumni", description: "Moderator Programs Alumni (old)", icon: "https://i.ibb.co/bjgmWgfN/5jRAgjg.png" },
-    { id: "hypesquad_events", description: "HypeSquad Events", icon: "https://cdn.discordapp.com/badge-icons/bf01d1073931f921909045f3a39fd264.png" },
-    { id: "hypesquad_old", description: "HypeSquad (old)", icon: "https://i.ibb.co/tpzZcKMc/hpFqxp1.png" },
-    { id: "hypesquad_bravery", description: "HypeSquad Bravery", icon: "https://cdn.discordapp.com/badge-icons/8a88d63823d8a71cd5e390baa45efa02.png" },
-    { id: "hypesquad_brilliance", description: "HypeSquad Brilliance", icon: "https://cdn.discordapp.com/badge-icons/011940fd013da3f7fb926e4a1cd2e618.png" },
-    { id: "hypesquad_balance", description: "HypeSquad Balance", icon: "https://cdn.discordapp.com/badge-icons/3aa41de486fa12454c3761e8e223442e.png" },
-    { id: "hypesquad_balance2", description: "HypeSquad Balance2", icon: "https://i.ibb.co/XBBcsPZ/mYRnJbI.png" },
-    { id: "hypesquad_balance3", description: "HypeSquad Balance3", icon: "https://i.ibb.co/VWt8btqS/ris927572961sst1761412742.png" },
-    { id: "hypesquad_bravery2", description: "HypeSquad Bravery2", icon: "https://i.ibb.co/yFFFYRFB/6P52dYE.png" },
-    { id: "hypesquad_brilliance2", description: "HypeSquad Brilliance2", icon: "https://i.ibb.co/b5xzh7hg/m79FdLS.png" },
-    { id: "hypesquad_balance4", description: "HypeSquad Balance4", icon: "https://i.ibb.co/KzBypwND/f7BT6fF.png" },
-    { id: "bug_hunter", description: "Discord Bug Hunter", icon: "https://cdn.discordapp.com/badge-icons/2717692c7dca7289b35297368a940dd0.png" },
-    { id: "bug_hunter_gold", description: "Discord Bug Hunter", icon: "https://cdn.discordapp.com/badge-icons/848f79194d4be5ff5f81505cbd0ce1e6.png" },
-    { id: "active_developer", description: "Active Developer", icon: "https://cdn.discordapp.com/badge-icons/6bdc42827a38498929a4920da12695d9.png" },
-    { id: "early_verified_bot_dev", description: "Early Verified Bot Developer", icon: "https://cdn.discordapp.com/badge-icons/6df5892e0f35b051f8b61eace34f4967.png" },
-    { id: "early_supporter", description: "Early Supporter", icon: "https://cdn.discordapp.com/badge-icons/7060786766c9c840eb3019e725d2b358.png" },
-    { id: "old_boost_1m", description: "Boost 1 Month", icon: "https://i.ibb.co/NdRrhyp2/TXvfcRR.png" },
-    { id: "old_boost_2m", description: "Boost 2 Months", icon: "https://i.ibb.co/S4BnMkgG/B38uGrA.png" },
-    { id: "old_boost_3m", description: "Boost 3 Months", icon: "https://i.ibb.co/whNfkx7p/APZkNLz.png" },
-    { id: "old_boost_6m", description: "Boost 6 Months", icon: "https://i.ibb.co/xtXyvCJQ/xRurzDc.png" },
-    { id: "boost_1m", description: "Boost 1 Month", icon: "https://cdn.discordapp.com/badge-icons/51040c70d4f20a921ad6674ff86fc95c.png" },
-    { id: "boost_2m", description: "Boost 2 Months", icon: "https://cdn.discordapp.com/badge-icons/0e4080d1d333bc7ad29ef6528b6f2fb7.png" },
-    { id: "boost_3m", description: "Boost 3 Months", icon: "https://cdn.discordapp.com/badge-icons/72bed924410c304dbe3d00a6e593ff59.png" },
-    { id: "boost_6m", description: "Boost 6 Months", icon: "https://cdn.discordapp.com/badge-icons/df199d2050d3ed4ebf84d64ae83989f8.png" },
-    { id: "boost_9m", description: "Boost 9 Months", icon: "https://cdn.discordapp.com/badge-icons/996b3e870e8a22ce519b3a50e6bdd52f.png" },
-    { id: "boost_12m", description: "Boost 12 Months", icon: "https://cdn.discordapp.com/badge-icons/991c9f39ee33d7537d9f408c3e53141e.png" },
-    { id: "boost_15m", description: "Boost 15 Months", icon: "https://cdn.discordapp.com/badge-icons/cb3ae83c15e970e8f3d410bc62cb8b99.png" },
-    { id: "boost_18m", description: "Boost 18 Months", icon: "https://cdn.discordapp.com/badge-icons/7142225d31238f6387d9f09efaa02759.png" },
-    { id: "boost_24m", description: "Boost 24 Months", icon: "https://cdn.discordapp.com/badge-icons/ec92202290b48d0879b7413d2dde3bab.png" },
-    { id: "new_boost_1m", description: "Boost 1 Month", icon: "https://i.ibb.co/1tFQ1c1d/0su0PqO.gif" },
-    { id: "new_boost_2m", description: "Boost 2 Months", icon: "https://i.ibb.co/Y7qd9SqJ/IQXEwtW.gif" },
-    { id: "new_boost_3m", description: "Boost 3 Months", icon: "https://i.ibb.co/YBgchYYP/YThyOs7.gif" },
-    { id: "new_boost_6m", description: "Boost 6 Months", icon: "https://i.ibb.co/XkNKXvqQ/5pe2rTB.gif" },
-    { id: "new_boost_9m", description: "Boost 9 Months", icon: "https://i.ibb.co/4RQgj0D7/7aerpNo.gif" },
-    { id: "new_boost_12m", description: "Boost 12 Months", icon: "https://i.ibb.co/ccxKmzd3/FCHg73e.gif" },
-    { id: "new_boost_15m", description: "Boost 15 Months", icon: "https://i.ibb.co/sv4dWmtD/s4Lg8ur.gif" },
-    { id: "new_boost_18m", description: "Boost 18 Months", icon: "https://i.ibb.co/vxJ1JJt0/LPuBKUl.gif" },
-    { id: "new_boost_24m", description: "Boost 24 Months", icon: "https://i.ibb.co/fzN8YWKY/9mJTrOZ.gif" },
-    { id: "pomelo_old", description: "Originally known as Discord#0000", icon: "https://i.ibb.co/Xxbtt9tc/aa08X9e.png" },
-    { id: "pomelo", description: "Originally known as Discord#0000", icon: "https://cdn.discordapp.com/badge-icons/6de6d34650760ba5551a79732e98ed60.png" },
-    { id: "clown", description: "A clown, for a limited time", icon: "https://i.ibb.co/9M1pDvJ/nnnzQos.png" },
-    { id: "quest", description: "Completed a Quest", icon: "https://cdn.discordapp.com/badge-icons/7d9ae358c8c5e118768335dbe68b4fb8.png" },
-    { id: "orb", description: "Orbs Apprentice", icon: "https://cdn.discordapp.com/badge-icons/83d8a1eb09a8d64e59233eec5d4d5c2d.png" },
-    { id: "supports_commands", description: "Supports Commands", icon: "https://cdn.discordapp.com/badge-icons/6f9e37f9029ff57aef81db857890005e.png" },
-    { id: "premium_app", description: "Premium App", icon: "https://i.ibb.co/0pfp0TD3/KYXZbLw.png" },
-    { id: "automod", description: "Uses AutoMod", icon: "https://cdn.discordapp.com/badge-icons/f2459b691ac7453ed6039bbcfaccbfcd.png" },
+function getBoostSinceDate(months: number): string {
+    const currentDate = new Date();
+    const sinceDate = new Date(currentDate);
+    sinceDate.setMonth(currentDate.getMonth() - months);
+    const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return `${monthNames[sinceDate.getMonth()]} ${sinceDate.getDate()}, ${sinceDate.getFullYear()}`;
+}
+
+const availableBadges = [
+    {
+        id: "staff",
+        title: "Discord Staff",
+        description: "Discord Staff",
+        icon: "5e74e9b61934fc1f67c65515d1f7e60d",
+        link: "https://discord.com/company"
+    },
+    {
+        id: "premium",
+        title: "Nitro Subscriber",
+        description: "Subscriber since Dec 22, 2016",
+        icon: "2ba85e8026a8614b640c2837bcdfe21b",
+        link: "https://discord.com/settings/premium"
+    },
+    {
+        id: "premium_tenure_1_month_v2",
+        title: "Nitro Bronze (1 month)",
+        description: `Subscriber since ${getNitroSinceDate(1)}`,
+        icon: "4f33c4a9c64ce221936bd256c356f91f",
+        link: "https://discord.com/nitro"
+    },
+    {
+        id: "premium_tenure_3_month_v2",
+        title: "Nitro Silver (3 months)",
+        description: `Subscriber since ${getNitroSinceDate(3)}`,
+        icon: "4514fab914bdbfb4ad2fa23df76121a6",
+        link: "https://discord.com/nitro"
+    },
+    {
+        id: "premium_tenure_6_month_v2",
+        title: "Nitro Gold (6 months)",
+        description: `Subscriber since ${getNitroSinceDate(6)}`,
+        icon: "2895086c18d5531d499862e41d1155a6",
+        link: "https://discord.com/nitro"
+    },
+    {
+        id: "premium_tenure_12_month_v2",
+        title: "Nitro Platinum (1 year)",
+        description: `Subscriber since ${getNitroSinceDate(12)}`,
+        icon: "0334688279c8359120922938dcb1d6f8",
+        link: "https://discord.com/nitro"
+    },
+    {
+        id: "premium_tenure_24_month_v2",
+        title: "Nitro Diamond (2 years)",
+        description: `Subscriber since ${getNitroSinceDate(24)}`,
+        icon: "0d61871f72bb9a33a7ae568c1fb4f20a",
+        link: "https://discord.com/nitro"
+    },
+    {
+        id: "premium_tenure_36_month_v2",
+        title: "Nitro Emerald (3 years)",
+        description: `Subscriber since ${getNitroSinceDate(36)}`,
+        icon: "11e2d339068b55d3a506cff34d3780f3",
+        link: "https://discord.com/nitro"
+    },
+    {
+        id: "premium_tenure_60_month_v2",
+        title: "Nitro Ruby (5 years)",
+        description: `Subscriber since ${getNitroSinceDate(60)}`,
+        icon: "cd5e2cfd9d7f27a8cdcd3e8a8d5dc9f4",
+        link: "https://discord.com/nitro"
+    },
+    {
+        id: "premium_tenure_72_month_v2",
+        title: "Nitro Opal (6+ years)",
+        description: `Subscriber since ${getNitroSinceDate(72)}`,
+        icon: "5b154df19c53dce2af92c9b61e6be5e2",
+        link: "https://discord.com/nitro"
+    },
+    {
+        id: "partner",
+        title: "Partnered Server Owner",
+        description: "Partnered Server Owner",
+        icon: "3f9748e53446a137a052f3454e2de41e",
+        link: "https://discord.com/partners"
+    },
+    {
+        id: "certified_moderator",
+        title: "Moderator Programs Alumni",
+        description: "Moderator Programs Alumni",
+        icon: "fee1624003e2fee35cb398e125dc479b",
+        link: "https://discord.com/safety"
+    },
+    {
+        id: "hypesquad",
+        title: "HypeSquad Events",
+        description: "HypeSquad Events",
+        icon: "bf01d1073931f921909045f3a39fd264",
+        link: "https://discord.com/hypesquad"
+    },
+    {
+        id: "hypesquad_house_1",
+        title: "HypeSquad Bravery",
+        description: "HypeSquad Bravery",
+        icon: "8a88d63823d8a71cd5e390baa45efa02",
+        link: "https://discord.com/settings/hypesquad-online"
+    },
+    {
+        id: "hypesquad_house_2",
+        title: "HypeSquad Brilliance",
+        description: "HypeSquad Brilliance",
+        icon: "011940fd013da3f7fb926e4a1cd2e618",
+        link: "https://discord.com/settings/hypesquad-online"
+    },
+    {
+        id: "hypesquad_house_3",
+        title: "HypeSquad Balance",
+        description: "HypeSquad Balance",
+        icon: "3aa41de486fa12454c3761e8e223442e",
+        link: "https://discord.com/settings/hypesquad-online"
+    },
+    {
+        id: "bug_hunter_level_1",
+        title: "Discord Bug Hunter",
+        description: "Discord Bug Hunter",
+        icon: "2717692c7dca7289b35297368a940dd0",
+        link: "https://support.discord.com/hc/en-us/articles/360046057772-Discord-Bugs"
+    },
+    {
+        id: "bug_hunter_level_2",
+        title: "Discord Bug Hunter Gold",
+        description: "Discord Bug Hunter",
+        icon: "848f79194d4be5ff5f81505cbd0ce1e6",
+        link: "https://support.discord.com/hc/en-us/articles/360046057772-Discord-Bugs"
+    },
+    {
+        id: "active_developer",
+        title: "Active Developer",
+        description: "Active Developer",
+        icon: "6bdc42827a38498929a4920da12695d9",
+        link: "https://support-dev.discord.com/hc/en-us/articles/10113997751447?ref=badge"
+    },
+    {
+        id: "verified_developer",
+        title: "Early Verified Bot Developer",
+        description: "Early Verified Bot Developer",
+        icon: "6df5892e0f35b051f8b61eace34f4967",
+        link: "https://discord.com/developers"
+    },
+    {
+        id: "early_supporter",
+        title: "Early Supporter",
+        description: "Early Supporter",
+        icon: "7060786766c9c840eb3019e725d2b358",
+        link: "https://discord.com/settings/premium"
+    },
+    {
+        id: "guild_booster_lvl1",
+        title: "Server Boost 1 Month",
+        description: `Server boosting since ${getBoostSinceDate(1)}`,
+        icon: "51040c70d4f20a921ad6674ff86fc95c",
+        link: "https://discord.com/settings/premium"
+    },
+    {
+        id: "guild_booster_lvl2",
+        title: "Server Boost 2 Months",
+        description: `Server boosting since ${getBoostSinceDate(2)}`,
+        icon: "0e4080d1d333bc7ad29ef6528b6f2fb7",
+        link: "https://discord.com/settings/premium"
+    },
+    {
+        id: "guild_booster_lvl3",
+        title: "Server Boost 3 Months",
+        description: `Server boosting since ${getBoostSinceDate(3)}`,
+        icon: "72bed924410c304dbe3d00a6e593ff59",
+        link: "https://discord.com/settings/premium"
+    },
+    {
+        id: "guild_booster_lvl4",
+        title: "Server Boost 6 Months",
+        description: `Server boosting since ${getBoostSinceDate(6)}`,
+        icon: "df199d2050d3ed4ebf84d64ae83989f8",
+        link: "https://discord.com/settings/premium"
+    },
+    {
+        id: "guild_booster_lvl5",
+        title: "Server Boost 9 Months",
+        description: `Server boosting since ${getBoostSinceDate(9)}`,
+        icon: "996b3e870e8a22ce519b3a50e6bdd52f",
+        link: "https://discord.com/settings/premium"
+    },
+    {
+        id: "guild_booster_lvl6",
+        title: "Server Boost 12 Months",
+        description: `Server boosting since ${getBoostSinceDate(12)}`,
+        icon: "991c9f39ee33d7537d9f408c3e53141e",
+        link: "https://discord.com/settings/premium"
+    },
+    {
+        id: "guild_booster_lvl7",
+        title: "Server Boost 15 Months",
+        description: `Server boosting since ${getBoostSinceDate(15)}`,
+        icon: "cb3ae83c15e970e8f3d410bc62cb8b99",
+        link: "https://discord.com/settings/premium"
+    },
+    {
+        id: "guild_booster_lvl8",
+        title: "Server Boost 18 Months",
+        description: `Server boosting since ${getBoostSinceDate(18)}`,
+        icon: "7142225d31238f6387d9f09efaa02759",
+        link: "https://discord.com/settings/premium"
+    },
+    {
+        id: "guild_booster_lvl9",
+        title: "Server Boost 24 Months",
+        description: `Server boosting since ${getBoostSinceDate(24)}`,
+        icon: "ec92202290b48d0879b7413d2dde3bab",
+        link: "https://discord.com/settings/premium"
+    },
+    {
+        id: "legacy_username",
+        title: "Legacy Username",
+        description: "Originally known as their old username",
+        icon: "6de6d34650760ba5551a79732e98ed60",
+        link: "https://discord.com"
+    },
+    {
+        id: "quest_completed",
+        title: "Quest Completer",
+        description: "Completed a Quest",
+        icon: "7d9ae358c8c5e118768335dbe68b4fb8",
+        link: "https://discord.com/settings/inventory"
+    },
+    {
+        id: "bot_commands",
+        title: "Supports Commands",
+        description: "Supports Commands",
+        icon: "6f9e37f9029ff57aef81db857890005e",
+        link: "https://discord.com/blog/welcome-to-the-new-era-of-discord-apps?ref=badge"
+    },
+    {
+        id: "automod",
+        title: "Uses AutoMod",
+        description: "Uses automod",
+        icon: "f2459b691ac7453ed6039bbcfaccbfcd",
+        link: "https://discord.com"
+    },
+    {
+        id: "application_guild_subscription",
+        title: "Server Subscription",
+        description: "Monetized server",
+        icon: "d2010c413a8da2208b7e4311042a4b9d",
+        link: "https://discord.com"
+    },
+    {
+        id: "orb_profile_badge",
+        title: "Orbs",
+        description: "Collected the Orb Profile Badge",
+        icon: "83d8a1eb09a8d64e59233eec5d4d5c2d",
+        link: "https://discord.com"
+    }
 ];
 
-
-function loadSavedBadges() {
-    try {
-        const saved = localStorage.getItem('badgeSelector_selectedBadges');
-        if (saved) {
-            const badgeIds = JSON.parse(saved);
-            selectedBadges = new Set(badgeIds);
-            badgeIds.forEach((badgeId: string) => {
-                const badge = AVAILABLE_BADGES.find(b => b.id === badgeId);
-                if (badge) {
-                    addBadge(badge);
+async function loadData() {
+    const savedCustomBadges = await DataStore.get("customBadges");
+    if (savedCustomBadges) {
+        Object.entries(savedCustomBadges).forEach(([userId, badges]) => {
+            const updatedBadges = (badges as any[]).map(badge => {
+                const freshBadge = availableBadges.find(b => b.id === badge.id);
+                if (freshBadge && (badge.id.startsWith("premium_tenure_") || badge.id.startsWith("guild_booster_"))) {
+                    return { ...badge, description: freshBadge.description };
                 }
+                return badge;
             });
-        }
-    } catch (error) {
-        console.error('Failed to load saved badges:', error);
+            customBadgesMap.set(userId, updatedBadges);
+        });
+    }
+
+    const savedRemovedBadges = await DataStore.get("removedBadges");
+    if (savedRemovedBadges) {
+        Object.entries(savedRemovedBadges).forEach(([userId, badgeIds]) => {
+            removedBadgesMap.set(userId, new Set(badgeIds as string[]));
+        });
     }
 }
 
-function saveBadges() {
-    try {
-        localStorage.setItem('badgeSelector_selectedBadges', JSON.stringify([...selectedBadges]));
-    } catch (error) {
-        console.error('Failed to save badges:', error);
-    }
-}
+async function saveData() {
+    const customBadgesObject = Object.fromEntries(customBadgesMap);
+    await DataStore.set("customBadges", customBadgesObject);
 
-function addAllBadges() {
-    AVAILABLE_BADGES.forEach(badge => {
-        if (!selectedBadges.has(badge.id)) {
-            selectedBadges.add(badge.id);
-            addBadge(badge);
-        }
-    });
-    saveBadges();
-}
-
-function removeAllBadges() {
-    selectedBadges.forEach(badgeId => {
-        removeBadge(badgeId);
-    });
-    selectedBadges.clear();
-    saveBadges();
-}
-
-function toggleBadge(badgeObj: any) {
-    if (selectedBadges.has(badgeObj.id)) {
-        selectedBadges.delete(badgeObj.id);
-        removeBadge(badgeObj.id);
-    } else {
-        selectedBadges.add(badgeObj.id);
-        addBadge(badgeObj);
-    }
-    saveBadges();
-}
-
-const UserProfileStore = findStoreLazy("UserProfileStore");
-
-function addBadge(badgeObj: any) {
-    const original = UserProfileStore.getUserProfile;
-
-    UserProfileStore.getUserProfile = function (userId: string) {
-        const userProfile = original.apply(this, arguments);
-        const currentUser = UserStore.getCurrentUser();
-
-        if (!userProfile || userId !== currentUser?.id) return userProfile;
-
-        userProfile.badges = Array.isArray(userProfile.badges) ? userProfile.badges : [];
-
-        const { id, description, icon, link } = badgeObj;
-        if (!userProfile.badges.some((b: any) => b.id === id)) {
-            userProfile.badges.push({
-                id: id,
-                description: description,
-                icon: icon,
-                link: link || "#"
-            });
-        }
-
-        return userProfile;
-    };
-}
-
-function removeBadge(badgeId: string) {
-    const original = UserProfileStore.getUserProfile;
-
-    UserProfileStore.getUserProfile = function (userId: string) {
-        const userProfile = original.apply(this, arguments);
-        if (userProfile && userId === UserStore.getCurrentUser()?.id) {
-            const badgeIndex = userProfile.badges.findIndex((b: any) => b.id === badgeId);
-            if (badgeIndex !== -1) {
-                userProfile.badges.splice(badgeIndex, 1);
-            }
-        }
-        return userProfile;
-    };
-}
-
-const UserContext: NavContextMenuPatchCallback = (children, props) => {
-    if (!props.user) return;
-
-    const currentUser = UserStore.getCurrentUser();
-    if (!currentUser || props.user.id !== currentUser.id) return;
-
-    const hasSelectedBadges = selectedBadges.size > 0;
-
-    children.splice(
-        -1,
-        0,
-        <Menu.MenuItem
-            label="Add Badges"
-            key="add-badges"
-            id="add-badges"
-        >
-            {}
-            <Menu.MenuItem
-                key="toggle-all"
-                id="toggle-all"
-                label={hasSelectedBadges ? "Remove every badges" : "Add every badges"}
-                action={hasSelectedBadges ? removeAllBadges : addAllBadges}
-            />
-            <Menu.MenuSeparator />
-
-            {AVAILABLE_BADGES.map(badge => {
-                const isSelected = selectedBadges.has(badge.id);
-                return (
-                    <Menu.MenuCheckboxItem
-                        key={badge.id}
-                        id={badge.id}
-                        label={
-                            <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-                                <img
-                                    src={badge.icon}
-                                    alt={badge.description}
-                                    style={{ width: "16px", height: "16px" }}
-                                />
-                                {badge.description}
-                            </div>
-                        }
-                        checked={isSelected}
-                        action={() => toggleBadge(badge)}
-                    />
-                );
-            })}
-        </Menu.MenuItem>
+    const removedBadgesObject = Object.fromEntries(
+        Array.from(removedBadgesMap.entries()).map(([userId, badgeIds]) => [userId, Array.from(badgeIds)])
     );
-};
+    await DataStore.set("removedBadges", removedBadgesObject);
+}
 
-const settings = definePluginSettings({
-    enabled: {
-        type: OptionType.BOOLEAN,
-        description: "Enable badge selector",
-        default: true,
+function addBadgesToUser(userId: string, badges: any[]) {
+    const existingBadges = customBadgesMap.get(userId) || [];
+    badges.forEach(badge => {
+        const existingIndex = existingBadges.findIndex(b => b.id === badge.id);
+        if (existingIndex === -1) {
+            existingBadges.push(badge);
+        }
+    });
+    customBadgesMap.set(userId, existingBadges);
+    saveData();
+}
+
+function removeBadgeFromUser(userId: string, badgeId: string) {
+    const existingBadges = customBadgesMap.get(userId) || [];
+    const updatedBadges = existingBadges.filter(b => b.id !== badgeId);
+    if (updatedBadges.length > 0) {
+        customBadgesMap.set(userId, updatedBadges);
+    } else {
+        customBadgesMap.delete(userId);
     }
-});
+    saveData();
+}
+
+function getUserBadges(userId: string): any[] {
+    return customBadgesMap.get(userId) || [];
+}
+
+function hideRealBadge(userId: string, badgeId: string) {
+    if (!removedBadgesMap.has(userId)) {
+        removedBadgesMap.set(userId, new Set());
+    }
+    removedBadgesMap.get(userId)!.add(badgeId);
+    saveData();
+}
+
+function unhideRealBadge(userId: string, badgeId: string) {
+    if (removedBadgesMap.has(userId)) {
+        removedBadgesMap.get(userId)!.delete(badgeId);
+        if (removedBadgesMap.get(userId)!.size === 0) {
+            removedBadgesMap.delete(userId);
+        }
+        saveData();
+    }
+}
+
+function isRealBadgeHidden(userId: string, badgeId: string): boolean {
+    return removedBadgesMap.has(userId) && removedBadgesMap.get(userId)!.has(badgeId);
+}
+
+function toggleBadge(userId: string, badge: any, hasActualBadge: boolean) {
+    const hasCustomBadge = getUserBadges(userId).find(b => b.id === badge.id);
+    const isHidden = isRealBadgeHidden(userId, badge.id);
+
+    if (hasActualBadge) {
+        if (isHidden) {
+            unhideRealBadge(userId, badge.id);
+            Toasts.show({
+                message: `Restored ${badge.title}`,
+                type: Toasts.Type.SUCCESS,
+                id: Toasts.genId()
+            });
+        } else {
+            hideRealBadge(userId, badge.id);
+            Toasts.show({
+                message: `Removed ${badge.title}`,
+                type: Toasts.Type.SUCCESS,
+                id: Toasts.genId()
+            });
+        }
+    } else {
+        if (hasCustomBadge) {
+            removeBadgeFromUser(userId, badge.id);
+            Toasts.show({
+                message: `Removed ${badge.title}`,
+                type: Toasts.Type.SUCCESS,
+                id: Toasts.genId()
+            });
+        } else {
+            addBadgesToUser(userId, [badge]);
+            Toasts.show({
+                message: `Added ${badge.title}`,
+                type: Toasts.Type.SUCCESS,
+                id: Toasts.genId()
+            });
+        }
+    }
+}
+
+function giveAllBadges(userId: string) {
+    addBadgesToUser(userId, availableBadges);
+    Toasts.show({
+        message: "Added all badges",
+        type: Toasts.Type.SUCCESS,
+        id: Toasts.genId()
+    });
+}
+
+function addCustomBadge(userId: string) {
+    const badgeId = prompt("Enter badge ID:");
+    if (!badgeId) return;
+
+    const description = prompt("Enter badge description:");
+    if (!description) return;
+
+    const icon = prompt("Enter badge icon hash:");
+    if (!icon) return;
+
+    const link = prompt("Enter badge link (optional):", "https://discord.com");
+
+    const customBadge = {
+        id: badgeId,
+        description: description,
+        icon: icon,
+        link: link || "https://discord.com"
+    };
+
+    addBadgesToUser(userId, [customBadge]);
+    Toasts.show({
+        message: `Added custom badge: ${badgeId}`,
+        type: Toasts.Type.SUCCESS,
+        id: Toasts.genId()
+    });
+}
+
+let originalGetUserProfile: any;
 
 export default definePlugin({
-    name: "BadgeSelector",
-    description: "Allows you to add Discord badges to your profile through a context menu with image fixer",
+    name: "CustomBadges",
+    description: "Customize user badges - add, remove, or hide any Discord badge",
     authors: [
-        { id: 1263457746829705310n, name: 'fhd' },
+        { id: 1263457746829705310n, name: '.q1' },
         { id: 1147940825330876538n, name: 'Jelly' },
         { id: 1403404140461297816n, name: 'Sami' },
     ],
 
-    settings,
+    async start() {
+        await loadData();
+        originalGetUserProfile = UserProfileStore.getUserProfile;
 
-    start() {
-        setupBadgeImageFixer();
-        loadSavedBadges();
+        UserProfileStore.getUserProfile = function (userId: string) {
+            const userProfile = originalGetUserProfile.call(this, userId);
+            if (!userProfile) return userProfile;
+
+            let newBadges = [...(userProfile.badges || [])];
+
+            if (removedBadgesMap.has(userId)) {
+                const hiddenBadges = removedBadgesMap.get(userId)!;
+                newBadges = newBadges.filter(b => !hiddenBadges.has(b.id));
+            }
+
+            if (customBadgesMap.has(userId)) {
+                const customBadges = customBadgesMap.get(userId)!;
+                customBadges.forEach(badgeObj => {
+                    const { id, description, icon, link } = badgeObj;
+                    const badgeIndex = newBadges.findIndex(b => b.id === id);
+                    if (badgeIndex === -1) {
+                        newBadges.push({ id, description, icon, link });
+                    }
+                });
+            }
+
+            newBadges.sort((a, b) => {
+                const orderA = availableBadges.findIndex(badge => badge.id === a.id);
+                const orderB = availableBadges.findIndex(badge => badge.id === b.id);
+
+                const finalOrderA = orderA === -1 ? 9999 : orderA;
+                const finalOrderB = orderB === -1 ? 9999 : orderB;
+
+                return finalOrderA - finalOrderB;
+            });
+
+            return {
+                ...userProfile,
+                badges: newBadges
+            };
+        };
+    },
+
+    stop() {
+        if (originalGetUserProfile) {
+            UserProfileStore.getUserProfile = originalGetUserProfile;
+        }
+        customBadgesMap.clear();
+        removedBadgesMap.clear();
     },
 
     contextMenus: {
-        "user-context": UserContext
-    },
+        "user-context"(children, { user }) {
+            if (!user) return;
+
+            const currentCustomBadges = getUserBadges(user.id);
+            const userProfile = originalGetUserProfile ? originalGetUserProfile.call(UserProfileStore, user.id) : UserProfileStore.getUserProfile(user.id);
+            const actualBadges = userProfile?.badges || [];
+
+            children.push(
+                <Menu.MenuItem
+                    label="Add Custom"
+                    key="add-custom-badge"
+                    id="user-context-add-custom"
+                    color="brand"
+                    action={() => addCustomBadge(user.id)}
+                />,
+                <Menu.MenuItem
+                    label="Custom Badges"
+                    key="custom-badges"
+                    id="user-context-custom-badges"
+                >
+                    {availableBadges.map(badge => {
+                        const hasCustomBadge = currentCustomBadges.find(b => b.id === badge.id);
+                        const hasActualBadge = actualBadges.find(b => b.id === badge.id);
+                        const isHidden = isRealBadgeHidden(user.id, badge.id);
+                        const isChecked = !!hasCustomBadge || (!!hasActualBadge && !isHidden);
+
+                        return (
+                            <Menu.MenuCheckboxItem
+                                key={badge.id}
+                                id={`badge-${badge.id}`}
+                                label={
+                                    <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                                        <img
+                                            src={`https://cdn.discordapp.com/badge-icons/${badge.icon}.png`}
+                                            alt=""
+                                            width="18"
+                                            height="18"
+                                            style={{
+                                                borderRadius: "3px",
+                                                imageRendering: "crisp-edges"
+                                            }}
+                                        />
+                                        <span>{badge.title}</span>
+                                    </div>
+                                }
+                                checked={isChecked}
+                                action={() => toggleBadge(user.id, badge, !!hasActualBadge)}
+                            />
+                        );
+                    })}
+                    <Menu.MenuSeparator />
+                    <Menu.MenuItem
+                        label="Give All Badges"
+                        id="give-all-badges"
+                        color="brand"
+                        action={() => giveAllBadges(user.id)}
+                    />
+                    <Menu.MenuItem
+                        label="Remove All Badges"
+                        id="remove-all-badges"
+                        color="danger"
+                        action={() => {
+                            actualBadges.forEach(badge => {
+                                hideRealBadge(user.id, badge.id);
+                            });
+                            customBadgesMap.delete(user.id);
+
+                            Toasts.show({
+                                message: "Removed all badges (real + custom)",
+                                type: Toasts.Type.SUCCESS,
+                                id: Toasts.genId()
+                            });
+                        }}
+                    />
+                    <Menu.MenuItem
+                        label="Reset to Original"
+                        id="reset-badges"
+                        color="default"
+                        action={() => {
+                            customBadgesMap.delete(user.id);
+                            removedBadgesMap.delete(user.id);
+
+                            Toasts.show({
+                                message: "Reset badges to original state",
+                                type: Toasts.Type.SUCCESS,
+                                id: Toasts.genId()
+                            });
+                        }}
+                    />
+                </Menu.MenuItem>
+            );
+        }
+    }
 });

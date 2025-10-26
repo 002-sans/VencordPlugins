@@ -17,12 +17,13 @@ BadgeSelector is a Vencord plugin that lets you add Discord badges to your profi
 
 ## Authors
 
-- [**fhd**](https://github.com/usy4)  
+- [**.q1**](https://github.com/usy4)  
 - [**Jelly**](https://github.com/jellys-space)  
 - **Sami**  
 
 ## License
 
 This plugin is licensed under [GPL-3.0-or-later](https://www.gnu.org/licenses/gpl-3.0.html).
+
 
 
